@@ -7,12 +7,16 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <string.h>
+#include <poll.h>
 
 #define PORT 1337
 
 typedef struct server {
     int socket;
     struct sockaddr_in addr;
+    int fd_size;
+    int fd_count;
+    struct pollfd *pfds;
 } server;
 
 static void die(const char* msg) {
@@ -20,6 +24,22 @@ static void die(const char* msg) {
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
+
+void add_to_pfds(struct pollfd **pfds, int newfd, int *fd_count,
+                 int *fd_size)
+{
+    if (*fd_count == *fd_size) {
+        *fd_size *= 2;
+        *pfds = realloc(*pfds, sizeof(**pfds) * (*fd_size));
+    }
+
+    (*pfds)[*fd_count].fd = newfd;
+    (*pfds)[*fd_count].events = POLLIN;
+    (*pfds)[*fd_count].revents = 0;
+
+    (*fd_count)++;
+}
+
 
 server* new_server(char* address, int port) {
     server* s = malloc(sizeof(server));
@@ -40,31 +60,101 @@ server* new_server(char* address, int port) {
 
     if (listen(s->socket, SOMAXCONN)) { die ("Error listening."); }
 
+    s->fd_size = 5;
+    s->pfds = malloc(sizeof(struct pollfd) * s->fd_size);
+    
+    s->pfds[0].fd = s->socket;
+    s->pfds[0].events = POLLIN;
+    s->fd_count = 1;
+
     return s;
+}
+
+void del_from_pfds(struct pollfd pfds[], int i, int* fd_count)
+{
+    pfds[i] = pfds[*fd_count-1];
+    (*fd_count)--;
+}
+
+void handle_new_connection(int listener, int* fd_count, int* fd_size, struct pollfd** pfds) {
+    struct sockaddr_storage remoteaddr;
+    socklen_t addrlen;
+    int newfd;
+    char remoteIP[INET6_ADDRSTRLEN];
+
+    addrlen = sizeof(remoteaddr);
+    newfd = accept(listener, (struct sockaddr*)&remoteaddr, &addrlen);
+
+    if (newfd == -1) { 
+        die("Error accept()"); 
+    } else {
+        add_to_pfds(pfds, newfd, fd_count, fd_size);
+
+        printf("new connection from %s on socket %d\n", remoteIP, newfd); 
+    }
+}
+
+void handle_client_data(int listener, int* fd_count, struct pollfd* pfds, int* pfd_i) {
+    char rbuf[256];
+
+    int nbytes = recv(pfds[*pfd_i].fd, rbuf, sizeof(rbuf), 0);
+
+    int sender_fd = pfds[*pfd_i].fd;
+
+    if (nbytes <= 0) {
+        if (nbytes == 0) {
+            // Connection was closed by a client
+            printf("socket %d hung up\n", sender_fd);
+        } else {
+            die("Error recv()");
+        }
+        close(sender_fd);
+
+        del_from_pfds(pfds, *pfd_i, fd_count);
+
+        (*pfd_i)--;
+    } else {
+        printf("recv from fd %d: %.*s", sender_fd, nbytes, rbuf);
+        // Send to other clients
+        for (int j = 0; j < *fd_count; j++) {
+            int dest_fd = pfds[j].fd;
+
+            if (dest_fd != listener && dest_fd != sender_fd) {
+                if (send(dest_fd, rbuf, nbytes, 0) == 1) {
+                    die("Error send()");
+                }
+            }
+        }
+
+    }
+}
+
+void process_connections(int listener, int* fd_count, int* fd_size, struct pollfd** pfds) {
+    for (int i = 0; i < *fd_count; i++) {
+        // Checks if any of the connections are ready
+        if ((*pfds)[i].revents & (POLLIN | POLLHUP)) {
+            // If listeners is ready, then there's a new connection
+            if ((*pfds)[i].fd == listener) {
+                handle_new_connection(listener, fd_count, fd_size, pfds);
+            } else {
+                handle_client_data(listener, fd_count, *pfds, &i);
+            }
+        }
+    }
 }
 
 void launch_server(server* s) {
     while (1) {
-        struct sockaddr_in client_addr;
-        socklen_t addrlen = sizeof(client_addr);
-        int connfd = accept(s->socket, (struct sockaddr*)&client_addr, &addrlen);
-        if (connfd < 0) { continue; }
+        int poll_count = poll(s->pfds, s->fd_count, -1);
+        if (poll_count == -1) { die("Error poll()"); }
 
-        char rbuf[1024];
-        ssize_t n = read(s->socket, rbuf, 1024);
-        if (n < 0) { die("Error reading."); }
-
-        printf("client says: %s\n", rbuf);
-
-        char* wbuf = "Hello, world!";
-        write(connfd, wbuf, strlen(wbuf));
-
-        close(connfd);
+        process_connections(s->socket, &s->fd_count, &s->fd_size, &s->pfds);
     }
 }
 
 void close_server(server* s) {
     close(s->socket);
+    free(s->pfds);
     free(s);
 }
 
