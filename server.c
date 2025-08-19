@@ -93,39 +93,52 @@ void handle_new_connection(int listener, int* fd_count, int* fd_size, struct pol
         printf("new connection from %s on socket %d\n", remoteIP, newfd); 
     }
 }
-
 void handle_client_data(int listener, int* fd_count, struct pollfd* pfds, int* pfd_i) {
-    char rbuf[256];
-
+    char rbuf[512];
     int nbytes = recv(pfds[*pfd_i].fd, rbuf, sizeof(rbuf), 0);
-
     int sender_fd = pfds[*pfd_i].fd;
-
+    
     if (nbytes <= 0) {
         if (nbytes == 0) {
-            // Connection was closed by a client
             printf("socket %d hung up\n", sender_fd);
         } else {
             die("Error recv()");
         }
         close(sender_fd);
-
         del_from_pfds(pfds, *pfd_i, fd_count);
-
         (*pfd_i)--;
-    } else {
-        printf("recv from fd %d: %.*s", sender_fd, nbytes, rbuf);
-        // Send to other clients
-        for (int j = 0; j < *fd_count; j++) {
-            int dest_fd = pfds[j].fd;
-
-            if (dest_fd != listener && dest_fd != sender_fd) {
-                if (send(dest_fd, rbuf, nbytes, 0) == 1) {
-                    die("Error send()");
-                }
+        return;
+    }
+    
+    size_t offset = 0;
+    uint8_t ulen = rbuf[offset];
+    offset += sizeof(ulen);
+    
+    char username[50];
+    memcpy(username, rbuf + offset, ulen);
+    username[ulen] = '\0';
+    offset += ulen;
+    
+    uint16_t mlen;
+    memcpy(&mlen, rbuf + offset, sizeof(mlen));
+    offset += sizeof(mlen);
+    
+    char message[256];
+    memcpy(message, rbuf + offset, mlen);
+    message[mlen] = '\0';
+    
+    char output[512];
+    snprintf(output, sizeof(output), "%s: %s\n", username, message);
+    
+    printf("recv from %s: %s\n", username, message);
+    
+    for (int j = 0; j < *fd_count; j++) {
+        int dest_fd = pfds[j].fd;
+        if (dest_fd != listener && dest_fd != sender_fd) {
+            if (send(dest_fd, output, strlen(output), 0) < 0) {
+                die("Error send()");
             }
         }
-
     }
 }
 
