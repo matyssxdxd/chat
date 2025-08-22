@@ -9,6 +9,14 @@
 #include <poll.h>
 #include <stdint.h>
 
+typedef struct client {
+    int socket;
+    struct sockaddr_in addr;
+    int fd_size;
+    int fd_count;
+    struct pollfd *pfds;
+} client;
+
 static void die(const char* msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);

@@ -77,10 +77,10 @@ void del_from_pfds(struct pollfd pfds[], int i, int* fd_count)
 }
 
 void handle_new_connection(int listener, int* fd_count, int* fd_size, struct pollfd** pfds) {
-    struct sockaddr_storage remoteaddr;
+    struct sockaddr_in remoteaddr;
     socklen_t addrlen;
     int newfd;
-    char remoteIP[INET6_ADDRSTRLEN];
+    char remoteIP[INET_ADDRSTRLEN];
 
     addrlen = sizeof(remoteaddr);
     newfd = accept(listener, (struct sockaddr*)&remoteaddr, &addrlen);
@@ -90,7 +90,9 @@ void handle_new_connection(int listener, int* fd_count, int* fd_size, struct pol
     } else {
         add_to_pfds(pfds, newfd, fd_count, fd_size);
 
-        printf("new connection from %s on socket %d\n", remoteIP, newfd); 
+        inet_ntop(AF_INET, &remoteaddr.sin_addr, remoteIP, INET6_ADDRSTRLEN);
+
+        printf("new connection from %s on socket %d\n", remoteIP, newfd);
     }
 }
 void handle_client_data(int listener, int* fd_count, struct pollfd* pfds, int* pfd_i) {
